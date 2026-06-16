@@ -1,17 +1,16 @@
 """
 Embedding pipeline for the Double You Studios scraper.
 
-Produces 768-dimensional L2-normalized embeddings for:
-- Product images via google/siglip-base-patch16-384 (local transformers)
-- Product text info via sentence-transformers/all-mpnet-base-v2 (local transformers)
+Produces 768-dimensional L2-normalized embeddings using
+google/siglip-base-patch16-384 (via local transformers) for:
+- Product images (image_embedding / back_image_embedding)
+- Product text metadata (info_embedding)
 
-Note on architecture:
-The user specified using HuggingFace free Inference API for both models,
-but google/siglip-base-patch16-384 is NOT available on the free serverless
-Inference API (returns 503), and Gemini embedding-001 is a Google API that
-is not hosted on HuggingFace at all. As a result, we run both models
-locally using the transformers library, which is the most reliable approach
-for CI/CD pipelines with model caching.
+SigLIP is a vision-language model that provides both image and text
+feature encoders in a shared embedding space. Both output 768-d vectors.
+
+This approach matches the established pattern across all Finds scrapers:
+all scrapers use local transformers with SigLIP, not the HF Inference API.
 """
 
 import io
@@ -23,54 +22,42 @@ import numpy as np
 from PIL import Image
 
 import torch
-import torch.nn.functional as F
 from transformers import AutoModel, AutoProcessor
-from sentence_transformers import SentenceTransformer
 
 from config import (
     EMBEDDING_DIM,
     EMBEDDING_VERSION,
+    EMBEDDING_MODEL,
     HF_DELAY,
-    IMAGE_EMBEDDING_MODEL,
     IMAGE_JPEG_QUALITY,
     IMAGE_MAX_LONG_SIDE,
-    TEXT_EMBEDDING_MODEL,
 )
 
 logger = logging.getLogger(__name__)
 
 
-# ── Lazy-loaded model singletons ────────────────────────────────────────────
+# ── Lazy-loaded model singleton ─────────────────────────────────────────────
 
-_siglip_model = None
-_siglip_processor = None
-_text_model = None
+_siglip_model: Optional[AutoModel] = None
+_siglip_processor: Optional[AutoProcessor] = None
 
 
 def _get_siglip():
-    """Lazy-load the SigLIP model and processor."""
+    """Lazy-load the SigLIP model and processor (singleton)."""
     global _siglip_model, _siglip_processor
     if _siglip_model is None:
-        logger.info("Loading SigLIP model: %s", IMAGE_EMBEDDING_MODEL)
+        logger.info("Loading SigLIP model: %s", EMBEDDING_MODEL)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        _siglip_model = AutoModel.from_pretrained(
-            IMAGE_EMBEDDING_MODEL, trust_remote_code=True
-        ).to(device).eval()
+        _siglip_model = (
+            AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
+            .to(device)
+            .eval()
+        )
         _siglip_processor = AutoProcessor.from_pretrained(
-            IMAGE_EMBEDDING_MODEL, trust_remote_code=True
+            EMBEDDING_MODEL, trust_remote_code=True
         )
         logger.info("SigLIP loaded on %s.", device)
     return _siglip_model, _siglip_processor
-
-
-def _get_text_model():
-    """Lazy-load the sentence-transformer text embedding model."""
-    global _text_model
-    if _text_model is None:
-        logger.info("Loading text embedding model: %s", TEXT_EMBEDDING_MODEL)
-        _text_model = SentenceTransformer(TEXT_EMBEDDING_MODEL)
-        logger.info("Text embedding model loaded.")
-    return _text_model
 
 
 # ── Image pre-processing ────────────────────────────────────────────────────
@@ -82,8 +69,7 @@ def _prepare_image(image_data: bytes) -> Image.Image:
 
     1. Decode to RGB.
     2. Resize longest side to max IMAGE_MAX_LONG_SIDE (preserve aspect ratio).
-    3. Encode as JPEG quality ~85%.
-    4. Decode again (to ensure consistent encoding).
+    3. Re-encode as JPEG quality ~85 for consistency.
     """
     img = Image.open(io.BytesIO(image_data))
     img = img.convert("RGB")
@@ -104,7 +90,18 @@ def _prepare_image(image_data: bytes) -> Image.Image:
     return img
 
 
-# ── Image embedding (SigLIP) ────────────────────────────────────────────────
+# ── L2 normalization helper ─────────────────────────────────────────────────
+
+
+def _l2_normalize(embedding: np.ndarray) -> np.ndarray:
+    """L2-normalize an embedding vector in-place."""
+    norm = np.linalg.norm(embedding)
+    if norm > 0:
+        embedding = embedding / norm
+    return embedding
+
+
+# ── Image embedding ─────────────────────────────────────────────────────────
 
 
 def embed_image(image_data: bytes) -> Optional[np.ndarray]:
@@ -112,10 +109,10 @@ def embed_image(image_data: bytes) -> Optional[np.ndarray]:
     Generate a 768-d L2-normalized embedding from product image bytes.
 
     Steps:
-    1. Prepare image (RGB, resize max 1280px, JPEG re-encode)
-    2. Run through SigLIP model
-    3. L2-normalize the embedding
-    4. Validate shape and finiteness
+    1. Prepare image (RGB, resize max 1280px, JPEG re-encode).
+    2. Run through SigLIP image encoder.
+    3. L2-normalize.
+    4. Validate shape and finiteness.
     """
     try:
         model, processor = _get_siglip()
@@ -123,21 +120,13 @@ def embed_image(image_data: bytes) -> Optional[np.ndarray]:
 
         img = _prepare_image(image_data)
 
-        # Process for SigLIP
-        inputs = processor(
-            images=img,
-            return_tensors="pt",
-        ).to(device)
+        inputs = processor(images=img, return_tensors="pt").to(device)
 
         with torch.no_grad():
             outputs = model.get_image_features(**inputs)
 
         embedding = outputs.cpu().numpy().flatten()
-
-        # L2-normalize
-        norm = np.linalg.norm(embedding)
-        if norm > 0:
-            embedding = embedding / norm
+        embedding = _l2_normalize(embedding)
 
         # Validate
         assert len(embedding) == EMBEDDING_DIM, (
@@ -153,16 +142,21 @@ def embed_image(image_data: bytes) -> Optional[np.ndarray]:
         return None
 
 
-# ── Text embedding (sentence-transformers) ──────────────────────────────────
+# ── Text embedding (SigLIP text encoder) ────────────────────────────────────
 
 
 def embed_text(text: str) -> Optional[np.ndarray]:
     """
-    Generate a 768-d L2-normalized embedding from product text metadata.
+    Generate a 768-d L2-normalized embedding from product text metadata
+    using the SigLIP text encoder.
+
+    This matches the pattern used across all Finds scrapers — SigLIP
+    is used for both image and text embeddings, keeping a single model
+    dependency and producing aligned embeddings.
 
     Args:
-        text: Concatenated text fields (title + description + category +
-              gender + price + sale + metadata + tags + size)
+        text: Concatenated text fields (title, description, category,
+              gender, price, sale, metadata, tags, size).
 
     Returns:
         768-d L2-normalized numpy array, or None on failure.
@@ -172,12 +166,27 @@ def embed_text(text: str) -> Optional[np.ndarray]:
             logger.warning("Empty text for embedding.")
             return None
 
-        model = _get_text_model()
-        embedding = model.encode(
-            text,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
+        model, processor = _get_siglip()
+        device = next(model.parameters()).device
+
+        # Truncate text to a reasonable max length to avoid OOM
+        # SigLIP default max_length is 64, but we can allow up to 128
+        max_len = min(len(text), 512)
+        text = text[:max_len]
+
+        inputs = processor(
+            text=[text],
+            padding="max_length",
+            truncation=True,
+            max_length=64,
+            return_tensors="pt",
+        ).to(device)
+
+        with torch.no_grad():
+            outputs = model.get_text_features(**inputs)
+
+        embedding = outputs.cpu().numpy().flatten()
+        embedding = _l2_normalize(embedding)
 
         # Validate
         assert len(embedding) == EMBEDDING_DIM, (
@@ -219,9 +228,13 @@ def build_info_text(row: dict) -> str:
     if metadata:
         try:
             import json
-            meta_dict = json.loads(metadata) if isinstance(metadata, str) else metadata
+
+            meta_dict = (
+                json.loads(metadata)
+                if isinstance(metadata, str)
+                else metadata
+            )
             if isinstance(meta_dict, dict):
-                # Extract useful fields
                 for key in ["sku_list", "option_values"]:
                     val = meta_dict.get(key)
                     if val:

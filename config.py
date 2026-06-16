@@ -38,8 +38,7 @@ SUPABASE_KEY: Optional[str] = os.environ.get("SUPABASE_KEY")
 HF_TOKEN: Optional[str] = os.environ.get("HF_TOKEN", None)
 
 # ── Embedding models ────────────────────────────────────────────────────────
-IMAGE_EMBEDDING_MODEL: str = "google/siglip-base-patch16-384"
-TEXT_EMBEDDING_MODEL: str = "sentence-transformers/all-mpnet-base-v2"
+EMBEDDING_MODEL: str = "google/siglip-base-patch16-384"
 EMBEDDING_VERSION: int = 2
 EMBEDDING_DIM: int = 768
 

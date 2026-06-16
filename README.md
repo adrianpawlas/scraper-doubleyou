@@ -20,7 +20,7 @@ requirements.txt
 2. **Fetch** → per product: `GET /products/{handle}.json`
 3. **Parse** → map Shopify JSON → `products` table schema
 4. **Diff** → compare scraped fields vs existing DB row; skip if unchanged
-5. **Embed** → SigLIP for images, `all-mpnet-base-v2` for text (only when needed)
+5. **Embed** → SigLIP for images and text (only when needed)
 6. **Upsert** → batches of 50 via Supabase REST API
 7. **Cleanup** → mark unseen products; delete after 2 consecutive misses
 
@@ -37,19 +37,18 @@ If no image contains "Back" in its filename, both `back_image_url` and `back_ima
 
 ## Embedding pipeline
 
-The user specification requested the HuggingFace free Inference API for SigLIP and Gemini embedding-001, but:
-- `google/siglip-base-patch16-384` is **not available** on the free HF Inference API (returns 503)
-- `Gemini embedding-001` is a **Google API** not hosted on HuggingFace
+All embeddings are generated using `google/siglip-base-patch16-384` via the local `transformers` library.
+This model provides both image and text feature encoders in a shared embedding space (768-d).
 
-Therefore, the scraper runs both models **locally** using the `transformers` library:
-
-| Embedding | Model | Dims | Method |
-|-----------|-------|------|--------|
-| `image_embedding` | `google/siglip-base-patch16-384` | 768 | Local `transformers` |
-| `back_image_embedding` | Same SigLIP model | 768 | Local `transformers` |
-| `info_embedding` | `sentence-transformers/all-mpnet-base-v2` | 768 | Local `sentence-transformers` |
+| Embedding | Model | Dims |
+|-----------|-------|------|
+| `image_embedding` | `google/siglip-base-patch16-384` (image encoder) | 768 |
+| `back_image_embedding` | Same SigLIP model | 768 |
+| `info_embedding` | Same SigLIP model (text encoder) | 768 |
 
 All embeddings are L2-normalized before storage.
+
+This matches the established pattern across all Finds scrapers.
 
 ### Image pre-processing pipeline
 
