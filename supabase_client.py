@@ -204,9 +204,16 @@ class SupabaseClient:
                 resp.raise_for_status()
                 return len(rows), 0, []
             except HTTPError as exc:
+                response_body = ""
+                resp = getattr(exc, "response", None)
+                if resp is not None:
+                    try:
+                        response_body = resp.text
+                    except Exception:
+                        pass
                 logger.warning(
-                    "Batch upsert attempt %d/%d failed: %s",
-                    attempt, max_retries, exc,
+                    "Batch upsert attempt %d/%d failed: %s | Response: %s",
+                    attempt, max_retries, exc, response_body[:1000],
                 )
                 if attempt < max_retries:
                     backoff = 2 ** attempt
@@ -217,8 +224,8 @@ class SupabaseClient:
                     ]
                     logger.error(
                         "Batch upsert failed after %d attempts. "
-                        "Failed IDs: %s",
-                        max_retries, failed_ids,
+                        "Failed IDs: %s | Last response body: %s",
+                        max_retries, failed_ids, response_body[:2000],
                     )
                     return 0, len(rows), failed_ids
 

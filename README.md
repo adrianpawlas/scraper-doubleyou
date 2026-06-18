@@ -80,7 +80,7 @@ Products not seen in a scrape run get their `metadata.scrape_miss_count` increme
 | `additional_images` | `"url1 , url2 , url3"` (space-comma-space separated) |
 | `category` | Derived from title keywords (e.g. `"Shirts"`, `"Knitwear"`, `"Bottoms"`) |
 | `metadata` | JSON string with sizes, SKUs, availability, scrape timestamp |
-| `id` | SHA-256 hash of `source:product_url` (stable across runs) |
+| `id` | UUID-formatted SHA-256 hash of `source:product_url` (e.g. `54a6589b-eed7-8b6e-2474-e2bc35a508ff`, stable across runs) |
 | `tags` | PostgreSQL text array |
 | `gender` | Always `unisex` |
 

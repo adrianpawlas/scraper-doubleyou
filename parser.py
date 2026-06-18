@@ -320,9 +320,11 @@ def _derive_category(title: str, product_type: str) -> Optional[str]:
 
 
 def generate_product_id(source: str, product_url: str) -> str:
-    """Stable product ID from source + product_url hash."""
+    """Stable product ID from source + product_url hash (UUID format)."""
     raw = f"{source}:{product_url}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    hex_digest = hashlib.sha256(raw.encode()).hexdigest()[:32]
+    # Format as UUID: 8-4-4-4-12 (compatible with uuid column type)
+    return f"{hex_digest[:8]}-{hex_digest[8:12]}-{hex_digest[12:16]}-{hex_digest[16:20]}-{hex_digest[20:32]}"
 
 
 # ── Metadata builder ────────────────────────────────────────────────────────

@@ -45,18 +45,30 @@ _siglip_processor: Optional[AutoProcessor] = None
 def _get_siglip():
     """Lazy-load the SigLIP model and processor (singleton)."""
     global _siglip_model, _siglip_processor
-    if _siglip_model is None:
+    if _siglip_model is None or _siglip_processor is None:
         logger.info("Loading SigLIP model: %s", EMBEDDING_MODEL)
+        # Reset both to None before init so a partial failure doesn't leave
+        # us in a broken state (model loaded, processor None).
+        _siglip_model = None
+        _siglip_processor = None
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        _siglip_model = (
-            AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
-            .to(device)
-            .eval()
-        )
-        _siglip_processor = AutoProcessor.from_pretrained(
-            EMBEDDING_MODEL, trust_remote_code=True
-        )
-        logger.info("SigLIP loaded on %s.", device)
+        try:
+            _siglip_model = (
+                AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
+                .to(device)
+                .eval()
+            )
+            _siglip_processor = AutoProcessor.from_pretrained(
+                EMBEDDING_MODEL, trust_remote_code=True
+            )
+            logger.info("SigLIP loaded on %s.", device)
+        except Exception as exc:
+            logger.error(
+                "Failed to load SigLIP model/processor: %s", exc
+            )
+            _siglip_model = None
+            _siglip_processor = None
+            raise
     return _siglip_model, _siglip_processor
 
 
