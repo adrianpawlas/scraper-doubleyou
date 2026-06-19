@@ -148,16 +148,31 @@ class RunSummary:
 
 
 def download_image(
-    url: str, client: httpx.Client
+    url: str, client: httpx.Client, max_retries: int = 3
 ) -> Optional[bytes]:
-    """Download image bytes from URL. Returns None on failure."""
-    try:
-        resp = client.get(url, timeout=30.0)
-        resp.raise_for_status()
-        return resp.content
-    except Exception as exc:
-        logger.error("Failed to download image %s: %s", url, exc)
-        return None
+    """Download image bytes from URL. Retries on 5xx with backoff."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = client.get(url, timeout=30.0)
+            resp.raise_for_status()
+            return resp.content
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500 and attempt < max_retries:
+                backoff = 2 ** attempt
+                logger.warning(
+                    "Server error %d on %s, retrying in %ds "
+                    "(attempt %d/%d)",
+                    exc.response.status_code, url,
+                    backoff, attempt, max_retries,
+                )
+                time.sleep(backoff)
+                continue
+            logger.error("Failed to download image %s: %s", url, exc)
+            return None
+        except Exception as exc:
+            logger.error("Failed to download image %s: %s", url, exc)
+            return None
+    return None
 
 
 # ── Main scrape function ────────────────────────────────────────────────────

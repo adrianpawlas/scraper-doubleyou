@@ -199,6 +199,11 @@ class SupabaseClient:
             uniform = {k: r.get(k, None) for k in all_keys}
             payload.append(uniform)
 
+        logger.debug(
+            "Upserting %d rows. Union keys (%d): %s",
+            len(payload), len(all_keys), sorted(all_keys),
+        )
+
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
@@ -229,7 +234,7 @@ class SupabaseClient:
                         pass
                 logger.warning(
                     "Batch upsert attempt %d/%d failed: %s | Response: %s",
-                    attempt, max_retries, exc, response_body[:1000],
+                    attempt, max_retries, exc, response_body[:2000],
                 )
                 if attempt < max_retries:
                     backoff = 2 ** attempt
@@ -238,11 +243,22 @@ class SupabaseClient:
                     failed_ids = [
                         r.get("id", "?") for r in rows
                     ]
-                    logger.error(
-                        "Batch upsert failed after %d attempts. "
-                        "Failed IDs: %s | Last response body: %s",
-                        max_retries, failed_ids, response_body[:2000],
-                    )
+                    # Log a sample row for debugging schema issues
+                    if payload:
+                        sample_keys = sorted(payload[0].keys())
+                        logger.error(
+                            "Batch upsert failed after %d attempts. "
+                            "Failed IDs: %s | Sample keys (%d): %s | "
+                            "Last response body: %s",
+                            max_retries, failed_ids, len(sample_keys),
+                            sample_keys, response_body[:2000],
+                        )
+                    else:
+                        logger.error(
+                            "Batch upsert failed after %d attempts. "
+                            "Failed IDs: %s | Last response body: %s",
+                            max_retries, failed_ids, response_body[:2000],
+                        )
                     return 0, len(rows), failed_ids
 
         return 0, len(rows), [r.get("id", "?") for r in rows]

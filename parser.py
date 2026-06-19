@@ -52,48 +52,82 @@ def _build_client() -> httpx.Client:
 # ── Product URL discovery ───────────────────────────────────────────────────
 
 
-def discover_all_product_urls() -> list[str]:
+def discover_all_product_urls(max_retries: int = 3) -> list[str]:
     """
     Iterate over all collection pages until an empty page is returned.
 
     Pagination: /collections/all/products.json?page=1, ?page=2, …
     When a page with 0 products is returned, scraping stops.
+    Retries on 5xx errors with exponential backoff.
     """
     urls: list[str] = []
-    page = 1
 
-    with _build_client() as client:
-        for category_url in CATEGORY_URLS:
-            base_url = category_url.rstrip("/") + "/products.json"
-            page = 1
-            while True:
-                paginated_url = f"{base_url}?page={page}"
-                logger.info("Fetching product list: %s", paginated_url)
-                try:
-                    resp = client.get(paginated_url)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    products = data.get("products", [])
-                    if not products:
-                        logger.info(
-                            "Empty page %d — done paginating.", page
+    for category_url in CATEGORY_URLS:
+        base_url = category_url.rstrip("/") + "/products.json"
+        page = 1
+        while True:
+            paginated_url = f"{base_url}?page={page}"
+            logger.info("Fetching product list: %s", paginated_url)
+
+            success = False
+            pagination_done = False
+            for attempt in range(1, max_retries + 1):
+                with _build_client() as client:
+                    try:
+                        resp = client.get(paginated_url)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        products = data.get("products", [])
+
+                        if not products:
+                            logger.info(
+                                "Empty page %d — done paginating.", page
+                            )
+                            success = True
+                            pagination_done = True
+                            break
+
+                        for product in products:
+                            handle = product.get("handle")
+                            if handle:
+                                product_url = (
+                                    f"https://doubleyou-studios.com"
+                                    f"/products/{handle}"
+                                )
+                                urls.append(product_url)
+                        page += 1
+                        success = True
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        if (
+                            exc.response.status_code >= 500
+                            and attempt < max_retries
+                        ):
+                            backoff = 2 ** attempt
+                            logger.warning(
+                                "Server error %d on %s, retrying in "
+                                "%ds (attempt %d/%d)",
+                                exc.response.status_code, paginated_url,
+                                backoff, attempt, max_retries,
+                            )
+                            time.sleep(backoff)
+                            continue
+                        logger.error(
+                            "Failed to fetch %s: %s", paginated_url, exc
                         )
                         break
-                    for product in products:
-                        handle = product.get("handle")
-                        if handle:
-                            product_url = (
-                                f"https://doubleyou-studios.com"
-                                f"/products/{handle}"
-                            )
-                            urls.append(product_url)
-                    page += 1
-                    time.sleep(STORE_REQUEST_DELAY)
-                except Exception as exc:
-                    logger.error(
-                        "Failed to fetch %s: %s", paginated_url, exc
-                    )
-                    break
+                    except Exception as exc:
+                        logger.error(
+                            "Failed to fetch %s: %s", paginated_url, exc
+                        )
+                        break
+
+            if not success:
+                break
+            if pagination_done:
+                break
+
+            time.sleep(STORE_REQUEST_DELAY)
 
     logger.info("Discovered %d product URLs.", len(urls))
     return urls
@@ -102,21 +136,39 @@ def discover_all_product_urls() -> list[str]:
 # ── Single product fetch ────────────────────────────────────────────────────
 
 
-def fetch_product_json(product_url: str) -> Optional[dict]:
+def fetch_product_json(
+    product_url: str, max_retries: int = 3
+) -> Optional[dict]:
     """
     Fetch the full product JSON from Shopify's /products/{handle}.json.
+    Retries on 5xx errors with exponential backoff.
     Returns the inner 'product' dict, or None on failure.
     """
     json_url = product_url.rstrip("/") + ".json"
-    with _build_client() as client:
-        try:
-            resp = client.get(json_url)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("product")
-        except Exception as exc:
-            logger.error("Failed to fetch %s: %s", json_url, exc)
-            return None
+    for attempt in range(1, max_retries + 1):
+        with _build_client() as client:
+            try:
+                resp = client.get(json_url)
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("product")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code >= 500 and attempt < max_retries:
+                    backoff = 2 ** attempt
+                    logger.warning(
+                        "Server error %d on %s, retrying in %ds "
+                        "(attempt %d/%d)",
+                        exc.response.status_code, json_url,
+                        backoff, attempt, max_retries,
+                    )
+                    time.sleep(backoff)
+                    continue
+                logger.error("Failed to fetch %s: %s", json_url, exc)
+                return None
+            except Exception as exc:
+                logger.error("Failed to fetch %s: %s", json_url, exc)
+                return None
+    return None
 
 
 # ── Back-view detection patterns (compiled once) ───────────────────────────
