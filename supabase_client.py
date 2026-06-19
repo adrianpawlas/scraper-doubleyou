@@ -175,13 +175,29 @@ class SupabaseClient:
         if not rows:
             return 0, 0, []
 
-        payload = []
+        # Remove None values individually, then compute the union of all
+        # keys present in this batch so every object has the same keys.
+        # Keys that are None for every row (e.g. created_at) stay omitted,
+        # preserving DB defaults. Keys that are None in some rows but have
+        # values in others are filled with JSON null to satisfy Supabase's
+        # "All object keys must match" requirement (PGRST102).
+        cleaned_rows = []
         for row in rows:
-            # Remove None values that shouldn't be sent
             clean = {k: v for k, v in row.items() if v is not None}
             # Always include source for the unique key
             clean["source"] = SOURCE
-            payload.append(clean)
+            cleaned_rows.append(clean)
+
+        # Compute the union of all keys across this batch
+        all_keys: set[str] = set()
+        for r in cleaned_rows:
+            all_keys.update(r.keys())
+
+        # Build the uniform payload
+        payload = []
+        for r in cleaned_rows:
+            uniform = {k: r.get(k, None) for k in all_keys}
+            payload.append(uniform)
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
