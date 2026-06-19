@@ -33,7 +33,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     BATCH_SIZE,
-    EMBEDDING_VERSION,
     HF_DELAY,
     REQUEST_DELAY,
     SOURCE,
@@ -300,7 +299,6 @@ def run_scrape(dry_run: bool = False, skip_embeddings: bool = False) -> RunSumma
                     embedding = embed_image(img_data)
                     if embedding is not None:
                         row["image_embedding"] = embedding.tolist()
-                        row["embedding_version"] = EMBEDDING_VERSION
                         summary.front_embeddings += 1
                 time.sleep(REQUEST_DELAY)
 

@@ -542,7 +542,6 @@ def parse_product(product_json: dict) -> Optional[dict]:
             "image_embedding": None,
             "back_image_embedding": None,
             "info_embedding": None,
-            "embedding_version": None,
             "created_at": None,  # DB handles default
         }
 
